@@ -11,6 +11,9 @@
 #include <c10d/Store.hpp>
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 
+#include <torch/csrc/distributed/rpc/tensorpipe_utils.h>
+
+
 // Forward-declare the TensorPipe classes we need, to avoid including its
 // headers in PyTorch's ones and thus have it become a public dependency.
 
@@ -154,6 +157,7 @@ struct AggregatedNetworkData {
   uint64_t totalErrors{0};
 };
 
+
 // TensorPipeAgent leverages TensorPipe (https://github.com/pytorch/tensorpipe)
 // to transparently move tensors and payloads through the fastest available
 // transport or channel. It acts like a hybrid RPC transport, providing shared
@@ -220,7 +224,8 @@ class TensorPipeAgent : public RpcAgent {
   // by client, and read request messages by server.
   void pipeRead(
       const std::shared_ptr<tensorpipe::Pipe>&,
-      std::function<void(const tensorpipe::Error&, Message&&)>) noexcept;
+      std::function<void(
+          const tensorpipe::Error&, Message&&, DevicesContext&&)>) noexcept;
 
   // TensorPipe write function that could be used to write response
   // messages by server, and write request messages by client.
@@ -228,6 +233,7 @@ class TensorPipeAgent : public RpcAgent {
       const std::shared_ptr<tensorpipe::Pipe>&,
       Message&& message,
       std::vector<c10::DeviceIndex>&& devices,
+      DevicesContext&& ctx,
       std::function<void(const tensorpipe::Error&)>) noexcept;
 
   // Callback of listener accept()
@@ -241,7 +247,8 @@ class TensorPipeAgent : public RpcAgent {
   void sendCompletedResponseMessage(
       std::shared_ptr<tensorpipe::Pipe>& pipe,
       std::shared_ptr<FutureMessage>& futureResponseMessage,
-      uint64_t messageId);
+      uint64_t messageId,
+      DevicesContext&& ctx);
 
   // Collects metrics from successful RPC calls
   void trackNetworkData(
