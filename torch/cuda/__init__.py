@@ -20,11 +20,14 @@ from .streams import Stream, Event
 from .. import device as _device
 import torch._C
 
+
 try:
     from torch._C import _cudart
 except ImportError:
     _cudart = None
 
+#torch.classes.load_library("./build/lib/libtorch_cpu.so")
+streamClass = 'torch.classes.cuda.Stream'
 _initialized = False
 _tls = threading.local()
 _initialization_lock = threading.Lock()
@@ -299,9 +302,20 @@ def get_device_properties(device: _device_t) -> _CudaDeviceProperties:
         raise AssertionError("Invalid device id")
     return _get_device_properties(device)
 
+class get_current_stream:
+    def __init__(self):
+        self.idx = 0 # Needs to be replaced by get_device_index()
+        self.stream = torch.cuda.getCurrentStream(self.idx)
+
+    def __enter__(self):
+        if self.idx == 1:
+            return
+
+    def __exit__(self):
+        return
 
 #@contextlib.contextmanager
-def stream(stream):
+def stream(stream: 'torch.classes.cuda.Stream') -> None:
     r"""Context-manager that selects a given stream.
 
     All CUDA kernels queued within its context will be enqueued on a selected
@@ -319,8 +333,8 @@ def stream(stream):
         #yield
         return
     #src_prev_stream = current_stream()
-    src_prev_stream = torch.cuda_getCurrentStream(0)
-    print("Src prev Stream:",torch.cuda_getCurrentStream(0))
+    src_prev_stream = get_current_stream()
+    print("Src prev Stream:",src_prev_stream)
     #if src_prev_stream.device != stream.device:
         # The given stream is on a different device; have to restore the
         # current_stream on that device on exit as well

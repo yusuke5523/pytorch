@@ -5,6 +5,7 @@
 #include <torch/csrc/MemoryFormat.h>
 #include <torch/csrc/jit/frontend/schema_matching.h>
 #include <torch/csrc/jit/python/module_python.h>
+#include <torch/csrc/jit/cuda/cuda.h>
 #include <climits>
 #include <memory>
 #include <sstream>
@@ -191,6 +192,7 @@ std::shared_ptr<SugaredValue> PythonValue::attr(
 py::object PythonValue::getattr(
     const SourceRange& loc,
     const std::string& name) {
+    std::cout<<"Name::"<<name<<std::endl;
   try {
     return py::getattr(self, name.c_str());
   } catch (py::error_already_set& e) {
@@ -434,6 +436,23 @@ std::shared_ptr<SugaredValue> toSugaredValue(
   } else {
     return toSimple(m.graph()->insertConstant(v, loc));
   }
+}
+
+std::shared_ptr<SugaredValue> CUDAPythonModuleValue::attr(
+    const SourceRange& loc,
+    Function& m,
+    const std::string& field) {
+
+  if(field != "getCurrentStream") {
+    py::object member = getattr(loc, field);
+    return toSugaredValue(member, m, loc, /*is_constant=*/true);
+  }
+  // note: is_constant = true because we consider that global properties
+  // on modules like math.pi or torch.float to be constants
+  // even though it is possible, though rare, for someone to mutate them
+
+    return std::make_shared<BuiltinFunction>(Symbol::aten("getCurrentStream"), c10::nullopt);
+
 }
 
 // This method controls how we desugar attribute lookups on ScriptModules
@@ -910,6 +929,11 @@ std::shared_ptr<SugaredValue> toSugaredValue(
   if (auto callee = as_function(obj)) {
     return std::make_shared<FunctionValue>(callee->function_);
   } else if (py::isinstance<py::module>(obj)) {
+    std::string obj_name = py::cast<py::str>(py::getattr(obj,"__name__"));
+    std::cout<<"Obj Name is:"<<obj_name<<std::endl;
+    if(obj_name.compare("torch.cuda") == 0) {
+        return std::make_shared<CUDAPythonModuleValue>(obj);
+    }
     return std::make_shared<PythonModuleValue>(obj);
   } else if (
       obj.ptr() == py::module::import("torch.jit").attr("_fork").ptr() ||
