@@ -17,8 +17,11 @@ class AttributePropagator {
   AttributePropagator(
       Module& module,
       std::vector<std::string>& preservedAttrs,
-      bool freezeInterfaces)
-      : module_(module), freezeInterfaces_(freezeInterfaces) {
+      bool freezeInterfaces,
+      bool preserveParameters)
+      : module_(module),
+        freezeInterfaces_(freezeInterfaces),
+        preserveParameters_(preserveParameters) {
     // Currently only top level attributes and functions can  be preserved
     // explicitly.
     auto checkName = [this](std::string& name) {
@@ -421,6 +424,13 @@ class AttributePropagator {
             if (isEval) {
               attr = overrideGradient(attr);
             }
+            if (preserveParameters_) {
+              auto type = attrModule.type();
+              auto slot = *type->findAttributeSlot(name);
+              if (type->is_parameter(slot) || type->is_buffer(slot)) {
+                continue;
+              }
+            }
             if (auto attrVal = tryInsertConstant(*graph, attr)) {
               paramConst = *attrVal;
             } else {
@@ -704,6 +714,9 @@ class AttributePropagator {
   // Allow to freeze modules containing interfaces.
   bool freezeInterfaces_;
 
+  // Preserve module parameters
+  bool preserveParameters_;
+
   // Contains the attributes names (e.g. {"self", "subModule", "a"}
   std::deque<std::string> names_;
 }; // class AttributePropagator
@@ -712,7 +725,8 @@ class AttributePropagator {
 Module freeze_module(
     const Module& module,
     std::vector<std::string> preservedAttrs,
-    bool freezeInterfaces) {
+    bool freezeInterfaces,
+    bool preserveParameters) {
   // Currently freezing module is supported only in eval mode.
   // If assertion below is commented and module is in training mode then this
   // implementation folds attributes correctly. Tensor attributes with
@@ -734,7 +748,7 @@ Module freeze_module(
 
   auto moduleClone = module.clone(true);
   AttributePropagator attrPropagator(
-      moduleClone, preservedAttrs, freezeInterfaces);
+      moduleClone, preservedAttrs, freezeInterfaces, preserveParameters);
   attrPropagator.run();
   return moduleClone;
 }

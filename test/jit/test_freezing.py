@@ -1055,6 +1055,14 @@ class TestFreezing(JitTestCase):
         m = torch.jit.load(buffer)
         FileCheck().check_not('GetAttr[name=') \
                    .run(m._c._get_method('forward').graph)
+        m2 = torch._C._freeze_module(model._c, preserveParameters=True)
+        self.assertTrue(m2.hasattr('conv1'))
+        self.assertTrue(m2.hasattr('conv2'))
+        self.assertFalse(m2.hasattr('dropout1'))
+        self.assertFalse(m2.hasattr('training'))
+        self.assertTrue(m2.hasattr('fc1'))
+        self.assertFalse(m2.hasattr('dropout2'))
+        self.assertTrue(m2.hasattr('fc2'))
 
     def test_freeze_module_detach_gradient(self):
         mod = nn.Conv2d(8, 3, 4, 2, 1)
