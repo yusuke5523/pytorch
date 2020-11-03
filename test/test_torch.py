@@ -10035,6 +10035,7 @@ class TestTorchDeviceType(TestCase):
                 (1j * torch.randn(25)).norm()
 
     @skipCUDAIfNoMagma
+    @skipCPUIfNoLapack
     @unittest.skipIf(not TEST_NUMPY, "Numpy not found")
     def test_nuclear_norm_axes_small_brute_force(self, device):
         def check_single_nuclear_norm(x, axes):
