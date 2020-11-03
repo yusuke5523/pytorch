@@ -235,11 +235,20 @@ class AttributePropagator {
           }
 
           auto attr = attrModule.attr(name);
+          auto mptr = attrModule._ivalue();
           if (n->kind() == prim::GetAttr) {
             auto type = n->output()->type();
             // Do not record submodules. Their attributes are tracked
             // individually.
-            if (attr.isObject() || !AliasDb::isMutableType(attr.type())) {
+            if (attr.isObject()) {
+              auto submodule = attr.toModule();
+              if (submodule.find_method("__setstate__")) {
+                insertMutableAttr(name, attr, mptr);
+              }
+              continue;
+            }
+
+            if (!AliasDb::isMutableType(attr.type())) {
               continue;
             }
             usedAttrs_.insert(attr);
@@ -250,7 +259,6 @@ class AttributePropagator {
                 n->kind() == prim::GetAttr ? "attribute: " + name + " in %" +
                         n->output()->debugName() + " has inplace writer"
                                            : "attribute: " + name + " is set");
-            auto mptr = attrModule._ivalue();
             insertMutableAttr(name, attr, mptr);
           }
         } else if (n->kind() == prim::fork) {
@@ -498,6 +506,11 @@ class AttributePropagator {
         return true;
       }
     }
+
+    if (subModule.find_method("__setstate__")) {
+      return true;
+    }
+
     return preservedSubModule_.count(subModule._ivalue());
   }
 
@@ -731,6 +744,9 @@ Module freeze_module(
       !module.hasattr("training") || !module.is_training(),
       "Freezing module in training mode is not yet supported");
 
+  TORCH_CHECK(
+      !module.find_method("__setstate__"),
+      "cannot freeze a module that has __set_state__");
   Method method = module.get_method("forward");
   // Check that module does not return itself.
   for (auto& output : method.graph()->outputs()) {
