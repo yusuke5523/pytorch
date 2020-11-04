@@ -325,6 +325,10 @@ class profile(object):
 
         with_stack (bool, optional): record source information (file and line number) for the ops
 
+        use_kineto (bool, default False): experimental support for Kineto profiler
+
+        use_cpu (default True) - whether to profile CPU events
+
     .. warning:
         Enabling memory profiling or source attribution incurs additional profiler
         overhead
@@ -364,16 +368,57 @@ class profile(object):
             use_cuda=False,
             record_shapes=False,
             profile_memory=False,
-            with_stack=False):
+            with_stack=False,
+            use_kineto=False,
+            use_cpu=True):
         self.enabled = enabled
-        self.use_cuda = use_cuda
-        self.function_events = None
         if not self.enabled:
             return
+        self.use_cuda = use_cuda
+        self.function_events = None
         self.entered = False
         self.record_shapes = record_shapes
         self.profile_memory = profile_memory
         self.with_stack = with_stack
+        self.use_kineto = use_kineto
+        self.use_cpu = use_cpu
+        if not self.use_cpu:
+            assert self.use_kineto, \
+                "Device-only events supported only with Kineto (use_kineto=True)"
+
+        self.profiler_kind = None
+        self.kineto_activities = []
+        if self.use_kineto:
+            self.profiler_kind = torch.autograd.ProfilerState.KINETO
+            if self.use_cpu:
+                self.kineto_activities = [torch.autograd.ProfilerActivity.CPU]
+            else:
+                self.kineto_activities = []
+            if self.use_cuda:
+                self.kineto_activities += [
+                    # uses CUPTI
+                    # torch.autograd.ProfilerActivity.CUDA_RUNTIME,
+                    torch.autograd.ProfilerActivity.CUDA]
+            assert len(self.kineto_activities) > 0, \
+                "No activities specified for Kineto profiler"
+        elif self.use_cuda:
+            # legacy CUDA mode
+            self.profiler_kind = torch.autograd.ProfilerState.CUDA
+        else:
+            self.profiler_kind = torch.autograd.ProfilerState.CPU
+        self.kineto_activities = set(self.kineto_activities)
+
+        if self.profiler_kind == torch.autograd.ProfilerState.KINETO:
+            assert (
+                torch.autograd.kineto_available()
+            ), """Requested Kineto profiling but Kineto is not available,
+                  make sure PyTorch is built with USE_KINETO=1"""
+
+        self.config = torch.autograd.ProfilerConfig(
+            self.profiler_kind,
+            self.record_shapes,
+            self.profile_memory,
+            self.with_stack)
 
     def __enter__(self):
         if not self.enabled:
@@ -381,25 +426,25 @@ class profile(object):
         if self.entered:
             raise RuntimeError("autograd profiler traces are not reentrant")
         self.entered = True
-        profiler_kind = torch.autograd.ProfilerState.CUDA if self.use_cuda \
-            else torch.autograd.ProfilerState.CPU
-
-        config = torch.autograd.ProfilerConfig(
-            profiler_kind,
-            self.record_shapes,
-            self.profile_memory,
-            self.with_stack)
-        torch.autograd._enable_profiler(config)
+        if self.use_kineto:
+            torch.autograd._prepare_profiler(self.config, self.kineto_activities)
+            torch.autograd._enable_profiler(self.config, self.kineto_activities)
+        else:
+            torch.autograd._enable_profiler_legacy(self.config)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if not self.enabled:
             return
-        records = torch.autograd._disable_profiler()
-        self.function_events = EventList(
-            parse_event_records(records),
-            use_cuda=self.use_cuda,
-            profile_memory=self.profile_memory)
+        if self.use_kineto:
+            result = torch.autograd._disable_profiler()
+            self.function_events = parse_profiler_result(result)
+        else:
+            records = torch.autograd._disable_profiler_legacy()
+            self.function_events = EventList(
+                parse_event_records(records),
+                use_cuda=self.use_cuda,
+                profile_memory=self.profile_memory)
         if self.with_stack:
             self.function_events.set_backward_stacktraces()
         return False
@@ -1180,7 +1225,9 @@ def build_table(
     has_input_shapes = any(
         [(event.input_shapes is not None and len(event.input_shapes) > 0) for event in events])
 
+    MAX_NAME_COLUMN_WIDTH = 55
     name_column_width = max([len(evt.key) for evt in events]) + 4
+    name_column_width = min(name_column_width, MAX_NAME_COLUMN_WIDTH)
 
     DEFAULT_COLUMN_WIDTH = 12
 
@@ -1288,8 +1335,11 @@ def build_table(
             continue
         else:
             event_limit += 1
+        name = evt.key
+        if len(name) >= MAX_NAME_COLUMN_WIDTH-3:
+            name = name[:(MAX_NAME_COLUMN_WIDTH-3)] + "..."
         row_values = [
-            evt.key,  # Name
+            name,
             # Self CPU total, 0 for async events. %
             format_time_share(evt.self_cpu_time_total,
                               self_cpu_time_total),

@@ -39,37 +39,93 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject *unused) {
       .value("Disabled", ProfilerState::Disabled)
       .value("CPU", ProfilerState::CPU)
       .value("CUDA", ProfilerState::CUDA)
-      .value("NVTX", ProfilerState::NVTX);
+      .value("NVTX", ProfilerState::NVTX)
+      .value("KINETO", ProfilerState::KINETO);
+
+  py::enum_<ActivityType>(m, "ProfilerActivity")
+      .value("CPU", ActivityType::CPU)
+      //.value("CUDA_RUNTIME", ActivityType::CUDA_RUNTIME)
+      .value("CUDA", ActivityType::CUDA);
 
   py::class_<ProfilerConfig>(m, "ProfilerConfig")
       .def(py::init<ProfilerState, bool, bool, bool>());
 
-  py::class_<Event>(m, "ProfilerEvent")
-      .def("kind", &Event::kind)
-      .def("name", [](const Event& e) { return e.name(); })
-      .def("thread_id", &Event::threadId)
-      .def("fwd_thread_id", &Event::fwdThreadId)
-      .def("device", &Event::device)
-      .def("cpu_elapsed_us", &Event::cpuElapsedUs)
-      .def("cuda_elapsed_us", &Event::cudaElapsedUs)
-      .def("has_cuda", &Event::hasCuda)
-      .def("shapes", &Event::shapes)
-      .def("cpu_memory_usage", &Event::cpuMemoryUsage)
-      .def("cuda_memory_usage", &Event::cudaMemoryUsage)
-      .def("handle", &Event::handle)
-      .def("node_id", &Event::nodeId)
-      .def("is_remote", &Event::isRemote)
-      .def("sequence_nr", &Event::sequenceNr)
-      .def("stack", &Event::stack)
-      .def("scope", &Event::scope);
+  py::class_<LegacyEvent>(m, "ProfilerEvent")
+      .def("kind", &LegacyEvent::kindStr)
+      .def("name", [](const LegacyEvent& e) { return e.name(); })
+      .def("thread_id", &LegacyEvent::threadId)
+      .def("fwd_thread_id", &LegacyEvent::fwdThreadId)
+      .def("device", &LegacyEvent::device)
+      .def("cpu_elapsed_us", &LegacyEvent::cpuElapsedUs)
+      .def("cuda_elapsed_us", &LegacyEvent::cudaElapsedUs)
+      .def("has_cuda", &LegacyEvent::hasCuda)
+      .def("shapes", &LegacyEvent::shapes)
+      .def("cpu_memory_usage", &LegacyEvent::cpuMemoryUsage)
+      .def("cuda_memory_usage", &LegacyEvent::cudaMemoryUsage)
+      .def("handle", &LegacyEvent::handle)
+      .def("node_id", &LegacyEvent::nodeId)
+      .def("is_remote", &LegacyEvent::isRemote)
+      .def("sequence_nr", &LegacyEvent::sequenceNr)
+      .def("stack", &LegacyEvent::stack)
+      .def("scope", &LegacyEvent::scope)
+      .def("correlation_id", &LegacyEvent::correlationId);
 
-  py::class_<ProfilerDisableOptions>(m, "_ProfilerDisableOptions")
-    .def(py::init<bool, bool>());
+#ifdef USE_KINETO
+  py::class_<KinetoEvent>(m, "KinetoEvent")
+      .def("name", &KinetoEvent::name)
+      .def("start_thread_id", [](const KinetoEvent& e) {
+        return e.startThreadId();
+      })
+      .def("end_thread_id", [](const KinetoEvent& e) {
+        return e.endThreadId();
+      })
+      .def("device_index", &KinetoEvent::deviceIndex)
+      .def("device_resource_id", &KinetoEvent::deviceResourceId)
+      .def("start_us", &KinetoEvent::startUs)
+      .def("duration_us", &KinetoEvent::durationUs)
+      .def("correlation_id", [](const KinetoEvent& e) {
+        return e.correlationId();
+      })
+      .def("fwd_thread_id", [](const KinetoEvent& e) {
+        return e.fwdThreadId();
+      })
+      .def("shapes", [](const KinetoEvent& e) {
+        return e.shapes();
+      })
+      .def("sequence_nr", [](const KinetoEvent& e) {
+        return e.sequenceNr();
+      })
+      .def("stack", [](const KinetoEvent& e) {
+        return e.stack();
+      })
+      .def("scope", [](const KinetoEvent& e) {
+        return e.scope();
+      });
+
+  py::class_<ProfilerResultWrapper>(m, "ProfilerResult")
+      .def("events",  [](const ProfilerResultWrapper& r) {
+        return r.result_->events();
+      })
+      .def("legacy_events",  [](const ProfilerResultWrapper& r) {
+        return r.result_->legacy_events();
+      })
+      .def("save",  [](const ProfilerResultWrapper& r, const std::string& path) {
+        return r.result_->save(path);
+      });
 
   m.def("_enable_profiler", enableProfiler);
+  m.def("_disable_profiler", disableProfiler);
+  m.def("_prepare_profiler", prepareProfiler);
+#endif
+
+  m.def("kineto_available", kinetoAvailable);
+
+  m.def("_enable_profiler_legacy", enableProfilerLegacy);
+  py::class_<ProfilerDisableOptions>(m, "_ProfilerDisableOptions")
+      .def(py::init<bool, bool>());
   m.def(
-      "_disable_profiler",
-      disableProfiler,
+      "_disable_profiler_legacy",
+      disableProfilerLegacy,
       py::arg("profiler_disable_options") = ProfilerDisableOptions());
   m.def("_profiler_enabled", profilerEnabled);
   m.def("_enable_record_function", [](bool enable) {
