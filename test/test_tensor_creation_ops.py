@@ -2,6 +2,7 @@ import warnings
 import unittest
 from itertools import product
 import random
+import math
 
 import torch
 
@@ -13,8 +14,7 @@ from torch.testing._internal.common_device_type import \
      onlyCPU, skipCUDAIfNotRocm, largeTensorTest, precisionOverride, dtypes,
      onlyCUDA, skipCPUIf, dtypesIfCUDA)
 
-if TEST_NUMPY:
-    import numpy as np
+import numpy as np
 
 # Test suite for tensor creation ops
 #
@@ -27,6 +27,130 @@ if TEST_NUMPY:
 
 class TestTensorCreation(TestCase):
     exact_dtype = True
+
+    @dtypes(torch.int32, torch.int64)
+    def test_large_linspace(self, device, dtype):
+        start = torch.iinfo(dtype).min
+        end = torch.iinfo(dtype).max & ~0xfff
+        steps = 15
+        x = torch.linspace(start, end, steps, dtype=dtype, device=device)
+        self.assertGreater(x[1] - x[0], (end - start) / steps)
+
+    @onlyOnCPUAndCUDA
+    def test_vander(self, device):
+        x = torch.tensor([1, 2, 3, 5], device=device)
+
+        self.assertEqual((0, 0), torch.vander(torch.tensor([]), 0).shape)
+
+        with self.assertRaisesRegex(RuntimeError, "N must be non-negative."):
+            torch.vander(x, N=-1)
+
+        with self.assertRaisesRegex(RuntimeError, "x must be a one-dimensional tensor."):
+            torch.vander(torch.stack((x, x)))
+
+    @onlyOnCPUAndCUDA
+    @dtypes(torch.bool, torch.uint8, torch.int8, torch.short, torch.int, torch.long,
+            torch.float, torch.double,
+            torch.cfloat, torch.cdouble)
+    def test_vander_types(self, device, dtype):
+        if dtype is torch.uint8:
+            # Note: no negative uint8 values
+            X = [[1, 2, 3, 5], [0, 1 / 3, 1, math.pi, 3 / 7]]
+        elif dtype is torch.bool:
+            # Note: see https://github.com/pytorch/pytorch/issues/37398
+            # for why this is necessary.
+            X = [[True, True, True, True], [False, True, True, True, True]]
+        elif dtype in [torch.cfloat, torch.cdouble]:
+            X = [[1 + 1j, 1 + 0j, 0 + 1j, 0 + 0j],
+                 [2 + 2j, 3 + 2j, 4 + 3j, 5 + 4j]]
+        else:
+            X = [[1, 2, 3, 5], [-math.pi, 0, 1 / 3, 1, math.pi, 3 / 7]]
+
+        N = [None, 0, 1, 3]
+        increasing = [False, True]
+
+        for x, n, inc in product(X, N, increasing):
+            numpy_dtype = torch_to_numpy_dtype_dict[dtype]
+            pt_x = torch.tensor(x, device=device, dtype=dtype)
+            np_x = np.array(x, dtype=numpy_dtype)
+
+            pt_res = torch.vander(pt_x, increasing=inc) if n is None else torch.vander(pt_x, n, inc)
+            np_res = np.vander(np_x, n, inc)
+
+            self.assertEqual(
+                pt_res,
+                torch.from_numpy(np_res),
+                atol=1e-3,
+                rtol=0,
+                exact_dtype=False)
+
+    @onlyCPU
+    def test_tensor_from_sequence(self, device):
+        class MockSequence(object):
+            def __init__(self, lst):
+                self.lst = lst
+
+            def __len__(self):
+                return len(self.lst)
+
+            def __getitem__(self, item):
+                raise TypeError
+
+        class GoodMockSequence(MockSequence):
+            def __getitem__(self, item):
+                return self.lst[item]
+
+        bad_mock_seq = MockSequence([1.0, 2.0, 3.0])
+        good_mock_seq = GoodMockSequence([1.0, 2.0, 3.0])
+        with self.assertRaisesRegex(ValueError, 'could not determine the shape'):
+            torch.Tensor(bad_mock_seq)
+        self.assertEqual(torch.Tensor([1.0, 2.0, 3.0]), torch.Tensor(good_mock_seq))
+
+    @onlyCPU
+    def test_new_methods_requires_grad(self, device):
+        size = (10,)
+        test_cases = [
+            # method name, args
+            ('new_full', [size, 1]),
+            ('new_empty', [size]),
+            ('new_zeros', [size]),
+        ]
+
+        for method_name, args in test_cases:
+            x = torch.randn(size)
+            for requires_grad in [True, False]:
+                x_new = x.__getattribute__(method_name)(*args, requires_grad=requires_grad)
+                self.assertEqual(x_new.requires_grad, requires_grad)
+            x = torch.randint(10, size)
+            with self.assertRaisesRegex(
+                    RuntimeError,
+                    r'Only Tensors of floating point and complex dtype can require gradients'):
+                x_new = x.__getattribute__(method_name)(*args, requires_grad=True)
+
+    @onlyCPU
+    def test_new(self, device) -> None:
+        x = torch.autograd.Variable(torch.Tensor())
+        y = torch.autograd.Variable(torch.randn(4, 4))
+        z = torch.autograd.Variable(torch.IntTensor([1, 2, 3]))
+        self.assertEqual(x.new().shape, [0])
+        self.assertEqual(x.new(), x)
+        self.assertEqual(x.new(1, 2).shape, [1, 2])
+        self.assertEqual(x.new(torch.Size([3, 4])).shape, [3, 4])
+        self.assertEqual(x.new([3, 4]).shape, [2])
+        self.assertEqual(x.new([3, 4]).tolist(), [3, 4])
+        self.assertEqual(x.new((3, 4)).tolist(), [3, 4])
+        self.assertEqual(x.new([np.int32(3), np.float64(4)]).tolist(), [3, 4])
+        self.assertEqual(x.new(np.array((3, 4))).tolist(), [3, 4])
+        self.assertEqual(x.new([z[2], z[0] + 3]).tolist(), [3, 4])
+        self.assertEqual(x.new(size=(3, 4)).shape, [3, 4])
+        self.assertEqual(x.new(()).shape, [0])
+        self.assertEqual(x.new(y.storage()).data_ptr(), y.data_ptr())
+        self.assertEqual(x.new(y).data_ptr(), y.data_ptr())
+        self.assertIsNot(x.new(y), y)
+
+        self.assertRaises(TypeError, lambda: x.new(z))
+        # TypeError would be better
+        self.assertRaises(RuntimeError, lambda: x.new(z.storage()))
 
     # TODO: this test should be updated
     @onlyOnCPUAndCUDA
@@ -1066,8 +1190,8 @@ class TestTensorCreation(TestCase):
             self._test_logspace_base2(device, dtype, steps=steps)
 
     @dtypes(*torch.testing.get_all_dtypes(include_bool=False, include_half=False, include_complex=False))
-    @dtypesIfCUDA(*((torch.testing.get_all_int_dtypes() + [torch.float32, torch.float16, torch.bfloat16]) 
-                    if TEST_WITH_ROCM 
+    @dtypesIfCUDA(*((torch.testing.get_all_int_dtypes() + [torch.float32, torch.float16, torch.bfloat16])
+                    if TEST_WITH_ROCM
                     else torch.testing.get_all_dtypes(include_bool=False, include_half=True, include_complex=False)))
     def test_logspace(self, device, dtype):
         _from = random.random()

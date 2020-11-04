@@ -13,7 +13,7 @@ from torch.testing._internal.common_utils import \
 from torch.testing._internal.common_methods_invocations import \
     (unary_ufuncs)
 from torch.testing._internal.common_device_type import \
-    (instantiate_device_type_tests, ops, dtypes)
+    (instantiate_device_type_tests, ops, dtypes, onlyOnCPUAndCUDA)
 from torch.testing import \
     (floating_types_and, integral_types, all_types_and_complex_and)
 
@@ -139,6 +139,170 @@ def generate_numeric_tensors(device, dtype, *,
 # TODO: add test for inplace variants erroring on broadcasted inputs
 class TestUnaryUfuncs(TestCase):
     exact_dtype = True
+
+    def unary_check_input_output_mem_overlap(self, data, sz, op,
+                                             expected_failure=False):
+
+        def _test(op, output, input):
+            output_exp = torch.empty_like(output)
+            op(input, out=output_exp)
+            self.assertEqual(op(input, out=output), output_exp, msg=op.__name__)
+
+        # output is identical to input:
+        _test(op, output=data[0:sz], input=data[0:sz])
+        # output and input are independent:
+        _test(op, output=data[0:sz], input=data[sz:2 * sz])
+        # output partially overlaps with input:
+        if not expected_failure:
+            with self.assertRaisesRegex(RuntimeError, 'unsupported operation'):
+                _test(op, data[0:sz], data[1:sz + 1])
+        else:
+            with self.assertRaises(AssertionError):
+                with self.assertRaisesRegex(RuntimeError, 'unsupported operation'):
+                    _test(op, data[0:sz], data[1:sz + 1])
+
+    def check_internal_mem_overlap(self, inplace_op, num_inputs,
+                                   dtype, device,
+                                   expected_failure=False):
+        if isinstance(inplace_op, str):
+            inplace_op = getattr(torch.Tensor, inplace_op)
+        input = torch.randn(1, dtype=dtype, device=device).expand(3, 3)
+        inputs = [input] + [torch.randn_like(input)
+                            for i in range(num_inputs - 1)]
+        if not expected_failure:
+            with self.assertRaisesRegex(RuntimeError, 'single memory location'):
+                inplace_op(*inputs)
+        else:
+            with self.assertRaises(AssertionError):
+                with self.assertRaisesRegex(RuntimeError, 'single memory location'):
+                    inplace_op(*inputs)
+
+    # TODO: run on non-native device types
+    @onlyOnCPUAndCUDA
+    @dtypes(torch.double)
+    def test_unary_out_op_mem_overlap(self, device, dtype):
+        sz = 3
+        doubles = torch.randn(2 * sz, dtype=dtype, device=device)
+        positives = torch.randint(1, 100, (2 * sz,), device=device).double()
+        ints = torch.randint(-100, 100, (2 * sz,), device=device)
+        unary_mem_overlap_cases = [
+            ("abs", doubles, True, True, 'cpu'),
+            ("abs", doubles, True, True, 'cuda'),
+            ("acos", doubles, True, True, 'cpu'),
+            ("acos", doubles, True, True, 'cuda'),
+            ("asin", doubles, True, True, 'cpu'),
+            ("asin", doubles, True, True, 'cuda'),
+            ("atan", doubles, True, True, 'cpu'),
+            ("atan", doubles, True, True, 'cuda'),
+            ("acosh", doubles, True, True, 'cpu'),
+            ("acosh", doubles, True, True, 'cuda'),
+            ("asinh", doubles, True, True, 'cpu'),
+            ("asinh", doubles, True, True, 'cuda'),
+            ("atanh", doubles, True, True, 'cpu'),
+            ("atanh", doubles, True, True, 'cuda'),
+            ("bitwise_not", ints, True, True, 'cpu'),
+            ("bitwise_not", ints, True, True, 'cuda'),
+            ("ceil", doubles, True, True, 'cpu'),
+            ("ceil", doubles, True, True, 'cuda'),
+            ("cos", doubles, True, True, 'cpu'),
+            ("cos", doubles, True, True, 'cuda'),
+            ("cosh", doubles, True, True, 'cpu'),
+            ("cosh", doubles, True, True, 'cuda'),
+            ("digamma", doubles, True, True, 'cpu'),
+            ("erf", doubles, True, True, 'cpu'),
+            ("erf", doubles, True, True, 'cuda'),
+            ("erfc", doubles, True, True, 'cpu'),
+            ("erfc", doubles, True, True, 'cuda'),
+            ("erfinv", doubles, True, True, 'cpu'),
+            ("erfinv", doubles, True, True, 'cuda'),
+            ("exp", doubles, True, True, 'cpu'),
+            ("exp", doubles, True, True, 'cuda'),
+            ("exp2", doubles, True, True, 'cpu'),
+            ("exp2", doubles, True, True, 'cuda'),
+            ("expm1", doubles, True, True, 'cpu'),
+            ("expm1", doubles, True, True, 'cuda'),
+            ("floor", doubles, True, True, 'cpu'),
+            ("floor", doubles, True, True, 'cuda'),
+            ("frac", doubles, True, True, 'cpu'),
+            ("frac", doubles, True, True, 'cuda'),
+            ("i0", doubles, True, True, 'cpu'),
+            ("i0", doubles, True, True, 'cuda'),
+            ("log", positives, True, True, 'cpu'),
+            ("log", positives, True, True, 'cuda'),
+            ("log10", positives, True, True, 'cpu'),
+            ("log10", positives, True, True, 'cuda'),
+            ("log1p", positives, True, True, 'cpu'),
+            ("log1p", positives, True, True, 'cuda'),
+            ("log2", positives, True, True, 'cpu'),
+            ("log2", positives, True, True, 'cuda'),
+            ("neg", doubles, True, True, 'cpu'),
+            ("neg", doubles, True, True, 'cuda'),
+            ("reciprocal", doubles, True, True, 'cpu'),
+            ("reciprocal", doubles, True, True, 'cuda'),
+            ("round", doubles, True, True, 'cpu'),
+            ("round", doubles, True, True, 'cuda'),
+            ("rsqrt", positives, True, True, 'cpu'),
+            ("rsqrt", positives, True, True, 'cuda'),
+            ("sin", doubles, True, True, 'cpu'),
+            ("sin", doubles, True, True, 'cuda'),
+            ("sinh", doubles, True, True, 'cpu'),
+            ("sinh", doubles, False, True, 'cuda'),
+            ("sigmoid", doubles, True, True, 'cpu'),
+            ("sigmoid", doubles, True, True, 'cuda'),
+            ("logit", doubles, True, True, 'cpu'),
+            ("logit", doubles, True, True, 'cuda'),
+            ("sqrt", doubles, True, True, 'cpu'),
+            ("sqrt", doubles, False, True, 'cuda'),
+            ("tan", doubles, True, True, 'cpu'),
+            ("tan", doubles, True, True, 'cuda'),
+            ("tanh", doubles, True, True, 'cpu'),
+            ("tanh", doubles, True, True, 'cuda'),
+            ("trunc", doubles, True, True, 'cpu'),
+            ("trunc", doubles, True, True, 'cuda')
+        ]
+
+        for (fn, inputs, has_input_output_mem_overlap_check,
+             has_internal_mem_overlap_check, dev) in unary_mem_overlap_cases:
+            if dev != device:
+                continue
+            out_fn = getattr(torch, fn)
+            in_fn = getattr(torch.Tensor, fn + '_')
+
+            self.unary_check_input_output_mem_overlap(inputs, sz, out_fn,
+                                                      expected_failure=not has_input_output_mem_overlap_check)
+
+            self.check_internal_mem_overlap(in_fn, 1, dtype, dev,
+                                            expected_failure=not has_internal_mem_overlap_check)
+
+    # This function tests that a nan value is returned for input values not in domain
+    @dtypes(torch.float32, torch.float64)
+    def test_acosh_domain_float(self, device, dtype):
+        # Domain of acosh is [1, inf), for values outside the domain - output is mapped
+        # to NaN, except for input value `inf` - output is mapped to `inf`
+        sample = torch.tensor([float('-inf'), 1.00, -1.23, -0.06, 0.98, float('inf')],
+                              device=device, dtype=dtype)
+        nan_mask = torch.tensor([True, False, True, True, True, False], device=device)
+        inf_mask = torch.tensor([False, False, False, False, False, True], device=device)
+        self.assertEqual(torch.isnan(torch.acosh(sample)), nan_mask)
+        self.assertEqual(torch.isnan(sample.acosh()), nan_mask)
+        self.assertEqual(torch.isinf(torch.acosh(sample)), inf_mask)
+        self.assertEqual(torch.isinf(sample.acosh()), inf_mask)
+
+    # This function tests that a nan value is returned for input values not in domain
+    @dtypes(torch.float32, torch.float64)
+    def test_atanh_domain_float(self, device, dtype):
+        # Domain of atanh is (-1, 1), for edge values (-1 and 1) - output is mapped
+        # to inf and for other values outside this range - output is mapped to NaN
+        sample = torch.tensor([float('-inf'), -1.00, 1.00, -1.23, 1.06, float('inf')],
+                              device=device, dtype=dtype)
+        nan_mask = torch.tensor([True, False, False, True, True, True], device=device)
+        inf_mask = torch.tensor([False, True, True, False, False, False], device=device)
+        # For values not in domain (except -1.0 and 1.0), atanh should return nan
+        self.assertEqual(torch.isnan(torch.atanh(sample)), nan_mask)
+        self.assertEqual(torch.isnan(sample.atanh()), nan_mask)
+        # For values -1.0 and 1.0, atanh should return -inf and inf respectively
+        self.assertEqual(torch.isinf(torch.atanh(sample)), inf_mask)
+        self.assertEqual(torch.isinf(sample.atanh()), inf_mask)
 
     # Tests bool tensor negation raises the correct error
     def test_neg_error_message(self, device):
